@@ -1,0 +1,6 @@
+pyTelegramBotAPI
+pydrive
+aiohttp
+telebot
+Thread
+pytest
