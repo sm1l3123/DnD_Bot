@@ -4,3 +4,8 @@ aiohttp
 telebot
 Thread
 pytest
+requests
+together
+google-api-python-client
+google-auth
+google-auth-oauthlib
