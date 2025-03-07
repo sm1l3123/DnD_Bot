@@ -737,9 +737,9 @@ async def show_character(call):
         f"🧙‍♂️ Персонаж: {char['name']}\n"
         f"ID: {character_id}\n"
         f"Предыстория (сокращённая): {char['short_backstory']}\n"
-        f"Кампании:\n" + "\n".join(f"- {DATA['campaigns'][c]['full_name']}" for c in char['campaigns']) or "нет"
+        f"Кампании:\n" + "\n".join(f"- {DATA['campaigns'][c]['full_name']}" for c in char.get('campaigns', [])) or "нет"
     )
-    buttons = [(f"🏰 {DATA['campaigns'][c]['short_name']}", f"history|{c}") for c in char["campaigns"]]
+    buttons = [(f"🏰 {DATA['campaigns'][c]['short_name']}", f"history|{c}") for c in char.get("campaigns", [])]
 
     # Проверяем, есть ли сохранённый портрет
     if "portrait" in char:
@@ -757,6 +757,49 @@ async def show_character(call):
         ])
 
     await send_menu(call.message.chat.id, text, buttons, buttons_per_row=2)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("show_full_backstory|"))
+async def show_full_backstory(call):
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    parts = call.data.split("|")
+    if len(parts) < 2:
+        await send_menu(chat_id, "❌ Ошибка в запросе!")
+        return
+    character_id = parts[1]
+    if character_id not in DATA["characters"] or DATA["characters"][character_id]["owner"] != user_id:
+        await send_menu(chat_id, "🚫 Это не твой персонаж!")
+        return
+
+    char = DATA["characters"][character_id]
+    full_backstory = char.get("backstory", "Предыстория отсутствует")
+    if full_backstory == "Предыстория отсутствует":
+        await send_menu(chat_id, "📜 Полная предыстория отсутствует.", back_to=f"show_character|{character_id}")
+        return
+
+    # Разбиваем текст на части по 4096 символов
+    MAX_MESSAGE_LENGTH = 4000
+    backstory_parts = [full_backstory[i:i + MAX_MESSAGE_LENGTH] for i in range(0, len(full_backstory), MAX_MESSAGE_LENGTH)]
+
+    # Отправляем каждую часть
+    for i, part in enumerate(backstory_parts, 1):
+        # Для первой части добавляем заголовок, для остальных — просто текст
+        if i == 1:
+            message_text = f"📜 Полная предыстория {char['name']}:\n{part}"
+        else:
+            message_text = part
+
+        # Если это последняя часть, добавляем кнопку "Назад"
+        if i == len(backstory_parts):
+            buttons = [("⬅️ Назад", f"show_character|{character_id}")]
+            await bot.send_message(chat_id, message_text, reply_markup=types.InlineKeyboardMarkup().add(
+                types.InlineKeyboardButton("⬅️ Назад", callback_data=f"show_character|{character_id}")
+            ))
+        else:
+            await bot.send_message(chat_id, message_text)
+
+    # Показываем, что бот печатает, чтобы избежать ощущения задержки
+    await bot.send_chat_action(chat_id, "typing")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("show_full_backstory|"))
 async def show_full_backstory(call):
