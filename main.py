@@ -1,4 +1,7 @@
 # Импортируем нужные библиотеки
+
+#Hello world!
+
 import aiohttp
 import asyncio
 from telebot.async_telebot import AsyncTeleBot
@@ -2392,7 +2395,6 @@ async def last_sessions_player(call):
     buttons = [(f"🎬 {session}", f"session_history_player|{short_name}|{session.split('(')[-1].strip(')')}") for session in reversed(last_three)]
     text = f"🎥 Последние сессии\n{DATA['campaigns'][short_name]['full_name']}:"
     await send_menu(call.message.chat.id, text, buttons, back_to=f"history|{short_name}", buttons_per_row=2)
-
 
 
 
