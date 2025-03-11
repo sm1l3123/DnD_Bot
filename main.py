@@ -13,6 +13,7 @@ from pydrive.drive import GoogleDrive
 import time
 from datetime import datetime
 from together import Together
+from dotenv import load_dotenv
 import base64
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -23,18 +24,22 @@ from google.auth.transport.requests import Request
 # Настраиваем логи
 logging.basicConfig(level=logging.INFO)
 logging.info("Bot started")
+load_dotenv() # Загружает переменные из .env
 
 # Глобальные переменные
-BOT_TOKEN = "7717720200:AAEtHU_1Znnx_Tn3aPZqv1ARhFrPvrSQG34"
-TOGETHER_API_KEY = "7e5b79f9e363fd0f600d1ca4f656a78f8b8cdcf1b5097a58c339e54a93fbbcc3"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
+TOGETHER_API_KEY =  os.getenv("TOGETHER_API_KEY")
 DATA_FILE = "dnd_data.json"
 TOGETHER_API_URL = "https://api.together.xyz/v1/chat/completions"
-ADMIN_PASSWORD = "kikiriki1237"
 BACKUP_FOLDER_FILE = "backup_folder_id.txt"
 DATA_CHANGED = False
 CAMPAIGN_BY_CODE = {}
 user_states = {}
 together_client = Together(api_key=TOGETHER_API_KEY)
+
+if not BOT_TOKEN or not ADMIN_PASSWORD:
+    raise ValueError("BOT_TOKEN или ADMIN_PASSWORD не заданы в .env!")
 
 # Инициализируем бота
 bot = AsyncTeleBot(BOT_TOKEN)
