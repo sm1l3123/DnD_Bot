@@ -232,17 +232,17 @@ async def generate_text(prompt, chat_id, is_dm=False, is_title=False):
 
 async def generate_image_prompt(backstory, chat_id):
     system_prompt = (
-        "Ты помощник, который создаёт промпт на английском языке для генерации портрета персонажа. "
-        "На основе переданной предыстории создай краткий, но детализированный промпт (максимум 50 слов), "
+        "Ты помощник, который создаёт промпт на английском языке для генерации портрета персонажа. Максимум реализма и деталей, а также улучшенные текстуры"
+        "На основе переданной внешности создай краткий, но детализированный промпт (максимум 100 слов), "
         "описывающий внешность и ключевые черты персонажа. Переведи предысторию на английский точно, "
         "не добавляй выдуманных деталей, используй только информацию из текста."
     )
-    prompt = f"Создай промпт для портрета на основе этой предыстории: {backstory}"
+    prompt = f"Создай промпт для портрета на основе этой внешности: {backstory}"
     headers = {"Authorization": f"Bearer {TOGETHER_API_KEY}", "Content-Type": "application/json"}
     payload = {
         "model": "deepseek-ai/DeepSeek-V3",
         "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}],
-        "max_tokens": 100,  # Ограничиваем длину промпта
+        "max_tokens": 200,  # Ограничиваем длину промпта
         "temperature": 0.3,  # Низкая температура для точности
         "top_p": 0.9,
         "stream": False
@@ -322,6 +322,42 @@ async def check_admin(chat_id, user_id):
     return True
 
 # Обработчики
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("admin_char_details|"))
+async def show_admin_char_details(call):
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    print(f"Callback received: {call.data}")  # Должно появиться в консоли
+    if not await check_access(chat_id, user_id, admin=True):
+        print(f"Access denied for user {user_id}")
+        await send_menu(chat_id, "🚫 У тебя нет доступа к этой функции!")
+        return
+    parts = call.data.split("|")
+    if len(parts) != 3:
+        print(f"Invalid callback format: {call.data}")
+        await send_menu(chat_id, "❌ Ошибка в запросе!")
+        return
+    target_uid, char_id = parts[1], parts[2]
+    print(f"Target UID: {target_uid}, Char ID: {char_id}")
+    if char_id not in DATA["characters"] or DATA["characters"][char_id]["owner"] != target_uid:
+        print(f"Character {char_id} not found or doesn't belong to {target_uid}")
+        await send_menu(chat_id, "❌ Персонаж не найден!", back_to=f"admin_user_details|{target_uid}")
+        return
+    char = DATA["characters"][char_id]
+    text = (
+        f"🧙‍♂️ Персонаж: {char['name']}\n"
+        f"ID: {char_id}\n"
+        f"Кампании: {', '.join(DATA['campaigns'][c]['full_name'] for c in char.get('campaigns', [])) or 'нет'}"
+    )
+    buttons = [
+        ("📜 Полная предыстория", f"admin_show_full_backstory|{char_id}"),
+        ("📖 Краткая предыстория", f"admin_show_short_backstory|{char_id}"),
+        ("👤 Внешность", f"admin_show_appearance|{char_id}"),
+        ("🖼 Портрет", f"admin_show_portrait|{char_id}"),
+        ("🗑 Удалить персонажа", f"admin_delete_char_prompt|{target_uid}|{char_id}")
+    ]
+    await send_menu(chat_id, text, buttons, back_to=f"admin_user_details|{target_uid}", buttons_per_row=2)
+
 @bot.message_handler(commands=['start'])
 async def send_welcome(message):
     user_id = str(message.from_user.id)
@@ -339,6 +375,9 @@ async def admin_login(message):
     user_states[user_id] = {"state": "waiting_for_admin_password"}
     await send_menu(message.chat.id, "🔒 Введи пароль админа:")
 
+# Предполагается, что импорты и глобальные переменные (BOT_TOKEN, DATA, ADMIN_PASSWORD и т.д.) уже определены выше
+
+# Обработчик ввода пароля админа для входа
 @bot.message_handler(func=lambda message: str(message.from_user.id) in user_states and user_states[str(message.from_user.id)].get("state") == "waiting_for_admin_password")
 async def handle_admin_password_input(message):
     global DATA_CHANGED
@@ -353,6 +392,7 @@ async def handle_admin_password_input(message):
         del user_states[user_id]
         await send_menu(message.chat.id, "❌ Неверный пароль админа!")
 
+# Команда выхода из админ-панели
 @bot.message_handler(commands=['exitadmin'])
 async def admin_logout(message):
     user_id = str(message.from_user.id)
@@ -365,6 +405,7 @@ async def admin_logout(message):
     else:
         await send_menu(message.chat.id, "❌ Ты не в админ-панели!")
 
+# Показ админ-панели
 async def show_admin_panel(chat_id, user_id):
     if not await check_access(chat_id, user_id, admin=True):
         return
@@ -376,6 +417,7 @@ async def show_admin_panel(chat_id, user_id):
     text = "⚙️ Админ-панель\nДобро пожаловать! Выбери действие:"
     await send_menu(chat_id, text, buttons, buttons_per_row=3)
 
+# Обработчик основных команд админ-панели
 @bot.callback_query_handler(func=lambda call: call.data.startswith("admin_"))
 async def handle_admin_commands(call):
     user_id = str(call.from_user.id)
@@ -405,7 +447,24 @@ async def handle_admin_commands(call):
         await show_campaign_details(call.message.chat.id, user_id, parts[1])
     elif command == "delete_campaign" and len(parts) > 1:
         await delete_campaign(call.message.chat.id, user_id, parts[1])
+    elif command == "char_details" and len(parts) > 2:  # Добавлен обработчик для меню персонажа
+        await show_admin_char_details(call.message.chat.id, user_id, parts[1], parts[2])
+    elif command == "show_full_backstory" and len(parts) > 1:
+        await admin_show_full_backstory(call)
+    elif command == "show_short_backstory" and len(parts) > 1:
+        await admin_show_short_backstory(call)
+    elif command == "show_appearance" and len(parts) > 1:
+        await admin_show_appearance(call)
+    elif command == "show_portrait" and len(parts) > 1:
+        await admin_show_portrait(call)
+    elif command == "delete_char_prompt" and len(parts) > 2:
+        await admin_delete_char_prompt(call)
+    elif command == "delete_char_password" and len(parts) > 2:
+        await admin_delete_char_password(call)
+    elif command == "delete_char" and len(parts) > 2:
+        await admin_delete_char(call)
 
+# Панель пользователей
 async def show_users_panel(chat_id, user_id):
     if not await check_access(chat_id, user_id, admin=True):
         return
@@ -417,6 +476,7 @@ async def show_users_panel(chat_id, user_id):
         buttons.append((f"👤 {user['name']}", f"admin_user_details|{uid}"))
     await send_menu(chat_id, text, buttons, back_to="admin_panel", buttons_per_row=2)
 
+# Детали пользователя
 async def show_user_details(chat_id, user_id, target_uid):
     if not await check_access(chat_id, user_id, admin=True):
         return
@@ -424,23 +484,209 @@ async def show_user_details(chat_id, user_id, target_uid):
     if not user:
         await send_menu(chat_id, "❌ Пользователь не найден!", back_to="admin_users")
         return
-    characters = [(cid, c["name"], c.get("backstory", "Нет предыстории")) for cid, c in DATA["characters"].items() if c["owner"] == target_uid]
-    campaigns = [c["full_name"] for c in DATA["campaigns"].values() if any(char_id in c["players"] for char_id, _, _ in characters)]
+    characters = [(cid, c["name"]) for cid, c in DATA["characters"].items() if c["owner"] == target_uid]
+    campaigns = [c["full_name"] for c in DATA["campaigns"].values() if any(char_id in c["players"] for char_id, _ in characters)]
     text = (
         f"👤 Детали пользователя\n"
         f"ID: {target_uid}\n"
         f"Имя: {user['name']}\n"
         f"Роль: {'мастер' if user['role'] == 'dm' else 'игрок'}\n"
         f"Пароль: {user['password']}\n"
-        f"Персонажи:\n" + "\n".join(f"- {name} (ID: {cid})\n  Предыстория: {backstory}" for cid, name, backstory in characters) + "\n"
+        f"Персонажи: {len(characters) or 'нет'}\n"
         f"Кампании: {', '.join(campaigns) or 'нет'}"
     )
     buttons = [
+        (f"🧙‍♂️ {name}", f"admin_char_details|{target_uid}|{cid}") for cid, name in characters
+    ] + [
         ("🔑 Сбросить пароль", f"admin_reset_password|{target_uid}"),
-        ("🗑 Удалить", f"admin_delete_user|{target_uid}")
+        ("🗑 Удалить пользователя", f"admin_delete_user|{target_uid}")
     ]
+    print(f"Buttons for user {target_uid}: {buttons}")  # Отладка
     await send_menu(chat_id, text, buttons, back_to="admin_users", buttons_per_row=2)
 
+# Добавлено: меню персонажа
+async def show_admin_char_details(chat_id, user_id, target_uid, char_id):
+    if not await check_access(chat_id, user_id, admin=True):
+        return
+    char = DATA["characters"].get(char_id, {})
+    if not char or char["owner"] != target_uid:
+        await send_menu(chat_id, "❌ Персонаж не найден!", back_to=f"admin_user_details|{target_uid}")
+        return
+    text = (
+        f"🧙‍♂️ Персонаж: {char['name']}\n"
+        f"ID: {char_id}\n"
+        f"Кампании: {', '.join(DATA['campaigns'][c]['full_name'] for c in char.get('campaigns', [])) or 'нет'}"
+    )
+    buttons = [
+        ("📜 Полная предыстория", f"admin_show_full_backstory|{char_id}"),
+        ("📖 Краткая предыстория", f"admin_show_short_backstory|{char_id}"),
+        ("👤 Внешность", f"admin_show_appearance|{char_id}"),
+        ("🖼 Портрет", f"admin_show_portrait|{char_id}"),
+        ("🗑 Удалить персонажа", f"admin_delete_char_prompt|{target_uid}|{char_id}")
+    ]
+    await send_menu(chat_id, text, buttons, back_to=f"admin_user_details|{target_uid}", buttons_per_row=2)
+
+# Показ полной предыстории
+async def admin_show_full_backstory(call):
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    parts = call.data.split("|")
+    if len(parts) < 2 or not await check_access(chat_id, user_id, admin=True):
+        await send_menu(chat_id, "❌ Ошибка!")
+        return
+    char_id = parts[1]
+    char = DATA["characters"].get(char_id, {})
+    text = f"📜 Полная предыстория {char.get('name', '???')}:\n{char.get('backstory', 'Предыстория отсутствует')}"
+    await send_menu(chat_id, text, back_to=f"admin_char_details|{char['owner']}|{char_id}")
+
+# Показ краткой предыстории
+async def admin_show_short_backstory(call):
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    parts = call.data.split("|")
+    if len(parts) < 2 or not await check_access(chat_id, user_id, admin=True):
+        await send_menu(chat_id, "❌ Ошибка!")
+        return
+    char_id = parts[1]
+    char = DATA["characters"].get(char_id, {})
+    text = f"📖 Краткая предыстория {char.get('name', '???')}:\n{char.get('short_backstory', 'Предыстория отсутствует')}"
+    await send_menu(chat_id, text, back_to=f"admin_char_details|{char['owner']}|{char_id}")
+
+# Показ внешности
+async def admin_show_appearance(call):
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    parts = call.data.split("|")
+    if len(parts) < 2 or not await check_access(chat_id, user_id, admin=True):
+        await send_menu(chat_id, "❌ Ошибка!")
+        return
+    char_id = parts[1]
+    char = DATA["characters"].get(char_id, {})
+    text = f"👤 Внешность {char.get('name', '???')}:\n{char.get('appearance', 'Не указана')}"
+    await send_menu(chat_id, text, back_to=f"admin_char_details|{char['owner']}|{char_id}")
+
+# Показ портрета
+async def admin_show_portrait(call):
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    parts = call.data.split("|")
+    if len(parts) < 2 or not await check_access(chat_id, user_id, admin=True):
+        await send_menu(chat_id, "❌ Ошибка!")
+        return
+    char_id = parts[1]
+    char = DATA["characters"].get(char_id, {})
+    if "portrait" in char:
+        with open(char["portrait"], "rb") as f:
+            await bot.send_photo(chat_id, photo=f, caption=f"🖼 Портрет {char['name']}")
+        await send_menu(chat_id, "✅ Портрет отправлен!", back_to=f"admin_char_details|{char['owner']}|{char_id}")
+    else:
+        await send_menu(chat_id, f"❌ У {char.get('name', '???')} нет портрета!", back_to=f"admin_char_details|{char['owner']}|{char_id}")
+
+# Запрос подтверждения удаления персонажа
+async def admin_delete_char_prompt(call):
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    if not await check_access(chat_id, user_id, admin=True):
+        return
+    parts = call.data.split("|")
+    if len(parts) < 3:
+        await send_menu(chat_id, "❌ Ошибка в запросе!")
+        return
+    target_uid, char_id = parts[1], parts[2]
+    char = DATA["characters"].get(char_id, {})
+    if not char or char["owner"] != target_uid:
+        await send_menu(chat_id, "❌ Персонаж не найден!", back_to=f"admin_user_details|{target_uid}")
+        return
+    buttons = [
+        ("✅ Да", f"admin_delete_char_password|{target_uid}|{char_id}"),
+        ("❌ Нет", f"admin_char_details|{target_uid}|{char_id}")
+    ]
+    text = (
+        f"🗑 Вы точно хотите удалить персонажа {char['name']}?\n"
+        f"⚠️ Все данные персонажа будут удалены без возможности восстановления!"
+    )
+    await send_menu(chat_id, text, buttons, buttons_per_row=2)
+
+# Запрос пароля для удаления персонажа
+async def admin_delete_char_password(call):
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    if not await check_access(chat_id, user_id, admin=True):
+        return
+    parts = call.data.split("|")
+    if len(parts) < 3:
+        await send_menu(chat_id, "❌ Ошибка в запросе!")
+        return
+    target_uid, char_id = parts[1], parts[2]
+    char = DATA["characters"].get(char_id, {})
+    if not char or char["owner"] != target_uid:
+        await send_menu(chat_id, "❌ Персонаж не найден!", back_to=f"admin_user_details|{target_uid}")
+        return
+    user_states[user_id] = {"state": "confirm_admin_char_deletion", "data": {"target_uid": target_uid, "char_id": char_id}}
+    text = (
+        f"🔒 Введи пароль админа для подтверждения удаления персонажа {char['name']}:\n"
+        f"⚠️ Это действие необратимо!"
+    )
+    await send_menu(chat_id, text, back_to=f"admin_char_details|{target_uid}|{char_id}")
+
+# Подтверждение удаления персонажа с паролем
+@bot.message_handler(func=lambda message: str(message.from_user.id) in user_states and user_states[str(message.from_user.id)].get("state") == "confirm_admin_char_deletion")
+async def confirm_admin_char_deletion(message):
+    global DATA_CHANGED
+    user_id = str(message.from_user.id)
+    chat_id = message.chat.id
+    if not await check_access(chat_id, user_id, admin=True):
+        del user_states[user_id]
+        return
+    target_uid = user_states[user_id]["data"]["target_uid"]
+    char_id = user_states[user_id]["data"]["char_id"]
+    char = DATA["characters"].get(char_id, {})
+    if not char or char["owner"] != target_uid:
+        await send_menu(chat_id, "❌ Персонаж не найден!", back_to=f"admin_user_details|{target_uid}")
+        del user_states[user_id]
+        return
+    if message.text.strip() != ADMIN_PASSWORD:
+        await send_menu(chat_id, "❌ Неверный пароль админа! Удаление отменено.", back_to=f"admin_char_details|{target_uid}|{char_id}")
+        del user_states[user_id]
+        return
+    char_name = char["name"]
+    for campaign in DATA["campaigns"].values():
+        if char_id in campaign["players"]:
+            campaign["players"].remove(char_id)
+    if "portrait" in char and os.path.exists(char["portrait"]):
+        os.remove(char["portrait"])
+    del DATA["characters"][char_id]
+    DATA_CHANGED = True
+    save_data()
+    await send_menu(chat_id, f"🗑 Персонаж {char_name} удалён навсегда!", back_to=f"admin_user_details|{target_uid}")
+    del user_states[user_id]
+
+# Удаление персонажа (без пароля, устаревшая версия)
+async def admin_delete_char(call):
+    global DATA_CHANGED
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    if not await check_access(chat_id, user_id, admin=True):
+        return
+    parts = call.data.split("|")
+    if len(parts) < 3:
+        await send_menu(chat_id, "❌ Ошибка в запросе!")
+        return
+    target_uid, char_id = parts[1], parts[2]
+    char = DATA["characters"].get(char_id, {})
+    if not char or char["owner"] != target_uid:
+        await send_menu(chat_id, "❌ Персонаж не найден!", back_to=f"admin_user_details|{target_uid}")
+        return
+    char_name = char["name"]
+    for campaign in DATA["campaigns"].values():
+        if char_id in campaign["players"]:
+            campaign["players"].remove(char_id)
+    del DATA["characters"][char_id]
+    DATA_CHANGED = True
+    save_data()
+    await send_menu(chat_id, f"🗑 Персонаж {char_name} удалён!", back_to=f"admin_user_details|{target_uid}")
+
+# Запрос сброса пароля
 async def reset_password_prompt(chat_id, user_id, target_uid):
     if not await check_access(chat_id, user_id, admin=True):
         return
@@ -449,6 +695,7 @@ async def reset_password_prompt(chat_id, user_id, target_uid):
                     f"🔑 Введи новый пароль для {DATA['users'][target_uid]['name']}:",
                     back_to=f"admin_user_details|{target_uid}")
 
+# Обработка ввода нового пароля
 @bot.message_handler(func=lambda message: str(message.from_user.id) in user_states and user_states[str(message.from_user.id)].get("state") == "waiting_for_reset_password")
 async def reset_password_input(message):
     global DATA_CHANGED
@@ -467,6 +714,7 @@ async def reset_password_input(message):
     await send_menu(message.chat.id, f"✅ Пароль для {DATA['users'][target_uid]['name']} сброшен на {new_password}!", back_to=f"admin_user_details|{target_uid}")
     del user_states[user_id]
 
+# Удаление пользователя
 async def delete_user(chat_id, user_id, target_uid):
     global DATA_CHANGED
     if not await check_access(chat_id, user_id, admin=True):
@@ -488,6 +736,7 @@ async def delete_user(chat_id, user_id, target_uid):
     DATA_CHANGED = True
     await send_menu(chat_id, f"🗑 Пользователь {user_name} удалён!", back_to="admin_users")
 
+# Панель кампаний
 async def show_campaigns_panel(chat_id, user_id):
     if not await check_access(chat_id, user_id, admin=True):
         return
@@ -499,6 +748,7 @@ async def show_campaigns_panel(chat_id, user_id):
         buttons.append((f"🏰 {short_name}", f"admin_campaign_details|{short_name}"))
     await send_menu(chat_id, text, buttons, back_to="admin_panel", buttons_per_row=2)
 
+# Детали кампании
 async def show_campaign_details(chat_id, user_id, short_name):
     if not await check_access(chat_id, user_id, admin=True):
         return
@@ -521,6 +771,7 @@ async def show_campaign_details(chat_id, user_id, short_name):
     buttons = [("🗑 Удалить", f"admin_delete_campaign|{short_name}")]
     await send_menu(chat_id, text, buttons, back_to="admin_campaigns", buttons_per_row=1)
 
+# Удаление кампании
 async def delete_campaign(chat_id, user_id, short_name):
     global DATA_CHANGED, CAMPAIGN_BY_CODE
     if not await check_access(chat_id, user_id, admin=True):
@@ -670,6 +921,87 @@ async def add_backstory_part_input(message):
         buttons
     )
 
+@bot.callback_query_handler(func=lambda call: call.data.startswith("add_backstory|"))
+async def add_backstory(call):
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    parts = call.data.split("|")
+    if len(parts) < 2:
+        await send_menu(chat_id, "❌ Ошибка в запросе!")
+        return
+    character_id = parts[1]
+    if character_id not in DATA["characters"] or DATA["characters"][character_id]["owner"] != user_id:
+        await send_menu(chat_id, "🚫 Это не твой персонаж!")
+        return
+
+    # Инициализируем пустой список для частей предыстории
+    DATA["characters"][character_id]["backstory_parts"] = []
+    user_states[user_id] = {
+        "state": "adding_backstory_parts",
+        "data": {"character_id": character_id, "name": DATA["characters"][character_id]["name"]}
+    }
+    buttons = [("🏁 Завершить предысторию", f"finish_backstory|{character_id}")]
+    await send_menu(
+        chat_id,
+        f"Добавляй предысторию для {DATA['characters'][character_id]['name']} по частям:",
+        buttons
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("edit_backstory|"))
+async def edit_backstory(call):
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    parts = call.data.split("|")
+    if len(parts) < 2:
+        await send_menu(chat_id, "❌ Ошибка в запросе!")
+        return
+    character_id = parts[1]
+    if character_id not in DATA["characters"] or DATA["characters"][character_id]["owner"] != user_id:
+        await send_menu(chat_id, "🚫 Это не твой персонаж!")
+        return
+
+    # Инициализируем пустой список для новых частей предыстории
+    DATA["characters"][character_id]["backstory_parts"] = []
+    user_states[user_id] = {
+        "state": "editing_backstory_parts",
+        "data": {"character_id": character_id, "name": DATA["characters"][character_id]["name"]}
+    }
+    buttons = [("🏁 Завершить предысторию", f"finish_backstory|{character_id}")]
+    await send_menu(
+        chat_id,
+        f"Перепиши предысторию для {DATA['characters'][character_id]['name']} по частям (старая будет заменена):",
+        buttons
+    )
+
+@bot.message_handler(func=lambda message: str(message.from_user.id) in user_states and user_states[str(message.from_user.id)].get("state") in ["adding_backstory_parts", "editing_backstory_parts"])
+async def add_backstory_part_input(message):
+    global DATA_CHANGED
+    user_id = str(message.from_user.id)
+    chat_id = message.chat.id
+    character_id = user_states[user_id]["data"]["character_id"]
+    name = user_states[user_id]["data"]["name"]
+    part = message.text.strip()
+
+    if not part:
+        buttons = [("🏁 Завершить предысторию", f"finish_backstory|{character_id}")]
+        await send_menu(chat_id, "❌ Часть не может быть пустой! Продолжай добавлять предысторию:", buttons)
+        return
+
+    # Добавляем часть в список
+    if "backstory_parts" not in DATA["characters"][character_id]:
+        DATA["characters"][character_id]["backstory_parts"] = []
+    DATA["characters"][character_id]["backstory_parts"].append(part)
+    DATA_CHANGED = True
+
+    buttons = [("🏁 Завершить предысторию", f"finish_backstory|{character_id}")]
+    await send_menu(
+        chat_id,
+        f"✅ Часть предыстории добавлена для {name}!\n"
+        f"Текущие части: {len(DATA['characters'][character_id]['backstory_parts'])}\n"
+        f"Продолжай добавлять или заверши:",
+        buttons
+    )
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith("finish_backstory|"))
 async def finish_backstory(call):
     global DATA_CHANGED
@@ -690,10 +1022,8 @@ async def finish_backstory(call):
         DATA["characters"][character_id]["backstory"] = "Предыстория отсутствует"
         DATA["characters"][character_id]["short_backstory"] = "Предыстория отсутствует"
     else:
-        # Объединяем все части в одну строку с пробелами
         full_backstory = " ".join(backstory_parts)
         DATA["characters"][character_id]["backstory"] = full_backstory
-        # Сокращаем предысторию с помощью DeepSeek V3
         prompt = f"Сократи этот текст до 5 предложений, сохраняя ключевые события и смысл, без выдумок:\n{full_backstory}"
         short_backstory = await generate_text(prompt, chat_id)
         if "Ошибка" in short_backstory:
@@ -707,14 +1037,134 @@ async def finish_backstory(call):
     DATA_CHANGED = True
     save_data()
 
+    # Проверяем, откуда был вызов: создание или редактирование
+    if user_states[user_id].get("state") == "adding_backstory_parts":
+        # Переход к добавлению внешности при создании персонажа
+        user_states[user_id] = {
+            "state": "adding_appearance",
+            "data": {"character_id": character_id, "name": DATA["characters"][character_id]["name"]}
+        }
+        buttons = [("🏁 Завершить без внешности", f"finish_appearance|{character_id}")]
+        await send_menu(
+            chat_id,
+            f"✅ Предыстория для {DATA['characters'][character_id]['name']} сохранена!\n"
+            f"Теперь опиши внешность персонажа (например, 'Высокий мужчина с чёрными волосами и зелёными глазами'):",
+            buttons
+        )
+    else:
+        # Возврат к профилю при редактировании
+        await send_menu(
+            chat_id,
+            f"✅ Предыстория для {DATA['characters'][character_id]['name']} обновлена!",
+            back_to=f"show_character|{character_id}"
+        )
+        if user_id in user_states:
+            del user_states[user_id]
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("finish_backstory|"))
+async def finish_backstory(call):
+    global DATA_CHANGED
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    parts = call.data.split("|")
+    if len(parts) < 2:
+        await send_menu(chat_id, "❌ Ошибка в запросе!")
+        return
+    character_id = parts[1]
+    if character_id not in DATA["characters"] or DATA["characters"][character_id]["owner"] != user_id:
+        await send_menu(chat_id, "🚫 Это не твой персонаж!")
+        return
+
+    # Собираем предысторию
+    backstory_parts = DATA["characters"][character_id].get("backstory_parts", [])
+    if not backstory_parts:
+        DATA["characters"][character_id]["backstory"] = "Предыстория отсутствует"
+        DATA["characters"][character_id]["short_backstory"] = "Предыстория отсутствует"
+    else:
+        full_backstory = " ".join(backstory_parts)
+        DATA["characters"][character_id]["backstory"] = full_backstory
+        prompt = f"Сократи этот текст до 5 предложений, сохраняя ключевые события и смысл, без выдумок:\n{full_backstory}"
+        short_backstory = await generate_text(prompt, chat_id)
+        if "Ошибка" in short_backstory:
+            await send_menu(chat_id, f"❌ Не удалось сократить предысторию: {short_backstory}")
+            return
+        DATA["characters"][character_id]["short_backstory"] = short_backstory
+
+    # Очищаем временные части
+    if "backstory_parts" in DATA["characters"][character_id]:
+        del DATA["characters"][character_id]["backstory_parts"]
+    DATA_CHANGED = True
+    save_data()
+
+    # Переключаем состояние на добавление внешности
+    user_states[user_id] = {
+        "state": "adding_appearance",
+        "data": {"character_id": character_id, "name": DATA["characters"][character_id]["name"]}
+    }
+    buttons = [("🏁 Завершить без внешности", f"finish_appearance|{character_id}")]
+    await send_menu(
+        chat_id,
+        f"✅ Предыстория для {DATA['characters'][character_id]['name']} сохранена!\n"
+        f"Теперь опиши внешность персонажа (например, 'Высокий мужчина с чёрными волосами и зелёными глазами'):",
+        buttons
+    )
+
+@bot.message_handler(func=lambda message: str(message.from_user.id) in user_states and user_states[str(message.from_user.id)].get("state") == "adding_appearance")
+async def add_appearance_input(message):
+    global DATA_CHANGED
+    user_id = str(message.from_user.id)
+    chat_id = message.chat.id
+    character_id = user_states[user_id]["data"]["character_id"]
+    name = user_states[user_id]["data"]["name"]
+    appearance = message.text.strip()
+
+    if not appearance:
+        buttons = [("🏁 Завершить без внешности", f"finish_appearance|{character_id}")]
+        await send_menu(chat_id, "❌ Описание внешности не может быть пустым! Попробуй снова:", buttons)
+        return
+
+    DATA["characters"][character_id]["appearance"] = appearance
+    DATA_CHANGED = True
+    save_data()
+
     buttons = [
         ("📜 Предыстория", f"show_character|{character_id}"),
-        ("🏰 Кампании", "join_campaign")
+        ("🖼 Сгенерировать портрет", f"generate_portrait|{character_id}"),
+        ("🤝 Вступить в новую", "join_campaign")
+    ]
+    await send_menu(
+        chat_id,
+        f"✅ Внешность для {name} сохранена:\n{appearance}\n"
+        f"Персонаж создан с ID: {character_id}!",
+        buttons,
+        buttons_per_row=2
+    )
+    if user_id in user_states:
+        del user_states[user_id]
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("finish_appearance|"))
+async def finish_appearance(call):
+    global DATA_CHANGED
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    parts = call.data.split("|")
+    if len(parts) < 2:
+        await send_menu(chat_id, "❌ Ошибка в запросе!")
+        return
+    character_id = parts[1]
+    if character_id not in DATA["characters"] or DATA["characters"][character_id]["owner"] != user_id:
+        await send_menu(chat_id, "🚫 Это не твой персонаж!")
+        return
+
+    buttons = [
+        ("📜 Предыстория", f"show_character|{character_id}"),
+        ("🖼 Сгенерировать портрет", f"generate_portrait|{character_id}"),
+        ("🤝 Вступить в новую", "join_campaign")
     ]
     await send_menu(
         chat_id,
         f"✅ Персонаж {DATA['characters'][character_id]['name']} создан с ID: {character_id}!\n"
-        f"Предыстория сохранена ({len(full_backstory.split())} слов).",
+        f"Внешность не указана — можно добавить позже.",
         buttons,
         buttons_per_row=2
     )
@@ -724,39 +1174,113 @@ async def finish_backstory(call):
 @bot.callback_query_handler(func=lambda call: call.data.startswith("show_character|"))
 async def show_character(call):
     user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
     parts = call.data.split("|")
     if len(parts) < 2:
-        await send_menu(call.message.chat.id, "❌ Ошибка в запросе!")
+        await send_menu(chat_id, "❌ Ошибка в запросе!")
         return
     character_id = parts[1]
     if character_id not in DATA["characters"] or DATA["characters"][character_id]["owner"] != user_id:
-        await send_menu(call.message.chat.id, "🚫 Это не твой персонаж!")
+        await send_menu(chat_id, "🚫 Это не твой персонаж!")
         return
+
     char = DATA["characters"][character_id]
     text = (
         f"🧙‍♂️ Персонаж: {char['name']}\n"
         f"ID: {character_id}\n"
         f"Предыстория (сокращённая): {char['short_backstory']}\n"
+        f"Внешность: {char.get('appearance', 'Не указана')}\n"
         f"Кампании:\n" + "\n".join(f"- {DATA['campaigns'][c]['full_name']}" for c in char.get('campaigns', [])) or "нет"
     )
     buttons = [(f"🏰 {DATA['campaigns'][c]['short_name']}", f"history|{c}") for c in char.get("campaigns", [])]
 
-    # Проверяем, есть ли сохранённый портрет
+    # Проверяем наличие портрета
     if "portrait" in char:
         with open(char["portrait"], "rb") as f:
-            await bot.send_photo(call.message.chat.id, photo=f, caption=f"Портрет {char['name']}")
-        buttons.extend([
-            ("📖 Полная предыстория", f"show_full_backstory|{character_id}"),
-            ("🤝 Вступить в новую", "join_campaign")
-        ])
+            await bot.send_photo(chat_id, photo=f, caption=f"Портрет {char['name']}")
+        # Проверяем наличие предыстории
+        if char.get("backstory", "Предыстория отсутствует") == "Предыстория отсутствует":
+            buttons.extend([
+                ("✏️ Добавить предысторию", f"add_backstory|{character_id}"),
+                ("✏️ Изменить внешность", f"edit_appearance|{character_id}"),
+                ("🤝 Вступить в новую", "join_campaign")
+            ])
+        else:
+            buttons.extend([
+                ("📖 Полная предыстория", f"show_full_backstory|{character_id}"),
+                ("✏️ Изменить предысторию", f"edit_backstory|{character_id}"),
+                ("✏️ Изменить внешность", f"edit_appearance|{character_id}"),
+                ("🤝 Вступить в новую", "join_campaign")
+            ])
     else:
-        buttons.extend([
-            ("📖 Полная предыстория", f"show_full_backstory|{character_id}"),
-            ("🖼 Сгенерировать портрет", f"generate_portrait|{character_id}"),
-            ("🤝 Вступить в новую", "join_campaign")
-        ])
+        # Если портрета нет
+        if char.get("backstory", "Предыстория отсутствует") == "Предыстория отсутствует":
+            buttons.extend([
+                ("✏️ Добавить предысторию", f"add_backstory|{character_id}"),
+                ("✏️ Добавить внешность", f"edit_appearance|{character_id}"),
+                ("🖼 Сгенерировать портрет", f"generate_portrait|{character_id}"),
+                ("🤝 Вступить в новую", "join_campaign")
+            ])
+        else:
+            buttons.extend([
+                ("📖 Полная предыстория", f"show_full_backstory|{character_id}"),
+                ("✏️ Изменить предысторию", f"edit_backstory|{character_id}"),
+                ("✏️ Добавить внешность", f"edit_appearance|{character_id}"),
+                ("🖼 Сгенерировать портрет", f"generate_portrait|{character_id}"),
+                ("🤝 Вступить в новую", "join_campaign")
+            ])
 
-    await send_menu(call.message.chat.id, text, buttons, buttons_per_row=2)
+    await send_menu(chat_id, text, buttons, buttons_per_row=2)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("edit_appearance|"))
+async def edit_appearance(call):
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    parts = call.data.split("|")
+    if len(parts) < 2:
+        await send_menu(chat_id, "❌ Ошибка в запросе!")
+        return
+    character_id = parts[1]
+    if character_id not in DATA["characters"] or DATA["characters"][character_id]["owner"] != user_id:
+        await send_menu(chat_id, "🚫 Это не твой персонаж!")
+        return
+
+    user_states[user_id] = {
+        "state": "editing_appearance",
+        "data": {"character_id": character_id, "name": DATA["characters"][character_id]["name"]}
+    }
+    buttons = [("🏁 Завершить без внешности", f"finish_appearance|{character_id}")]
+    await send_menu(
+        chat_id,
+        f"Опиши внешность персонажа {DATA['characters'][character_id]['name']} (например, 'Высокий мужчина с чёрными волосами и зелёными глазами'):",
+        buttons
+    )
+
+@bot.message_handler(func=lambda message: str(message.from_user.id) in user_states and user_states[str(message.from_user.id)].get("state") == "editing_appearance")
+async def process_appearance_input(message):
+    global DATA_CHANGED
+    user_id = str(message.from_user.id)
+    chat_id = message.chat.id
+    character_id = user_states[user_id]["data"]["character_id"]
+    name = user_states[user_id]["data"]["name"]
+    appearance = message.text.strip()
+
+    if not appearance:
+        buttons = [("🏁 Завершить без внешности", f"finish_appearance|{character_id}")]
+        await send_menu(chat_id, "❌ Описание внешности не может быть пустым! Попробуй снова:", buttons)
+        return
+
+    DATA["characters"][character_id]["appearance"] = appearance
+    DATA_CHANGED = True
+    save_data()
+
+    await send_menu(
+        chat_id,
+        f"✅ Внешность для {name} обновлена:\n{appearance}",
+        back_to=f"show_character|{character_id}"
+    )
+    if user_id in user_states:
+        del user_states[user_id]
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("show_full_backstory|"))
 async def show_full_backstory(call):
@@ -821,52 +1345,64 @@ async def show_full_backstory(call):
     await send_menu(call.message.chat.id, text)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("generate_portrait|"))
-async def handle_generate_portrait(call):
+async def generate_portrait(call):
     user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
     parts = call.data.split("|")
     if len(parts) < 2:
-        await send_menu(call.message.chat.id, "❌ Ошибка в запросе!")
+        await send_menu(chat_id, "❌ Ошибка в запросе!")
         return
     character_id = parts[1]
     if character_id not in DATA["characters"] or DATA["characters"][character_id]["owner"] != user_id:
-        await send_menu(call.message.chat.id, "🚫 Это не твой персонаж!")
+        await send_menu(chat_id, "🚫 Это не твой персонаж!")
         return
+
     char = DATA["characters"][character_id]
-    backstory = char["backstory"]
-
-    # Генерируем портрет
-    b64_image, error = await generate_character_portrait(backstory, call.message.chat.id)
-    if error:
-        await send_menu(call.message.chat.id, f"❌ {error}", back_to=f"show_character|{character_id}")
+    appearance = char.get("appearance", "Описание внешности отсутствует")
+    if appearance == "Описание внешности отсутствует":
+        await send_menu(
+            chat_id,
+            "❌ У персонажа нет описания внешности! Добавь его сначала.",
+            back_to=f"show_character|{character_id}"
+        )
         return
 
-    # Декодируем base64 в байты и отправляем изображение
+    # Генерация изображения на основе внешности
+    b64_image, error = await generate_character_portrait(appearance, chat_id)
+    if error:
+        await send_menu(chat_id, f"❌ Не удалось сгенерировать портрет: {error}")
+        return
+
+    # Сохраняем временное изображение в состоянии
+    user_states[user_id] = {
+        "state": "portrait_generated",
+        "data": {"character_id": character_id, "b64_image": b64_image}
+    }
+
+    # Отправляем портрет
     import base64
     image_data = base64.b64decode(b64_image)
-    await bot.send_photo(call.message.chat.id, photo=image_data, caption=f"Портрет {char['name']}")
+    await bot.send_photo(chat_id, photo=image_data, caption=f"Портрет {char['name']} на основе внешности")
 
-    # Сохраняем временный портрет в состоянии пользователя
-    user_states[user_id] = {"state": "portrait_generated", "data": {"character_id": character_id, "b64_image": b64_image}}
-
-    # Предлагаем сохранить или перегенерировать
     buttons = [
         ("💾 Сохранить портрет", f"save_portrait|{character_id}"),
         ("🔄 Перегенерировать", f"regenerate_portrait|{character_id}"),
         ("⬅️ Назад в меню персонажа", f"show_character|{character_id}")
     ]
-    await send_menu(call.message.chat.id, "✅ Портрет сгенерирован! Что дальше?", buttons, buttons_per_row=2)
+    await send_menu(chat_id, "✅ Портрет сгенерирован! Что дальше?", buttons, buttons_per_row=2)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("save_portrait|"))
 async def handle_save_portrait(call):
     global DATA_CHANGED
     user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
     parts = call.data.split("|")
     if len(parts) < 2 or user_id not in user_states or user_states[user_id].get("state") != "portrait_generated":
-        await send_menu(call.message.chat.id, "❌ Ошибка или сессия истекла!", back_to="main_menu")
+        await send_menu(chat_id, "❌ Ошибка или сессия истекла!", back_to="main_menu")
         return
     character_id = parts[1]
     if character_id not in DATA["characters"] or DATA["characters"][character_id]["owner"] != user_id:
-        await send_menu(call.message.chat.id, "🚫 Это не твой персонаж!")
+        await send_menu(chat_id, "🚫 Это не твой персонаж!")
         return
 
     # Извлекаем данные из состояния
@@ -895,13 +1431,14 @@ async def handle_save_portrait(call):
     # Выполняем резервное копирование на Google Drive
     try:
         backup_portrait_to_drive(portrait_path, owner_id, char_name)
+        backup_message = "и успешно загружен на Google Drive"
     except Exception as e:
         logging.error(f"Ошибка бэкапа портрета на Google Drive: {str(e)}")
-        await send_menu(call.message.chat.id, f"✅ Портрет сохранён локально, но ошибка бэкапа: {str(e)}", back_to=f"show_character|{character_id}")
-        return
+        backup_message = f", но произошла ошибка бэкапа на Google Drive: {str(e)}"
 
     # Очищаем состояние
-    del user_states[user_id]
+    if user_id in user_states:
+        del user_states[user_id]
 
     # Возвращаемся в меню персонажа
     buttons = [("⬅️ Назад в меню персонажа", f"show_character|{character_id}")]
@@ -910,28 +1447,36 @@ async def handle_save_portrait(call):
 @bot.callback_query_handler(func=lambda call: call.data.startswith("regenerate_portrait|"))
 async def handle_regenerate_portrait(call):
     user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
     parts = call.data.split("|")
     if len(parts) < 2 or user_id not in user_states or user_states[user_id].get("state") != "portrait_generated":
-        await send_menu(call.message.chat.id, "❌ Ошибка или сессия истекла!", back_to="main_menu")
+        await send_menu(chat_id, "❌ Ошибка или сессия истекла!", back_to="main_menu")
         return
     character_id = parts[1]
     if character_id not in DATA["characters"] or DATA["characters"][character_id]["owner"] != user_id:
-        await send_menu(call.message.chat.id, "🚫 Это не твой персонаж!")
+        await send_menu(chat_id, "🚫 Это не твой персонаж!")
         return
 
     char = DATA["characters"][character_id]
-    backstory = char["backstory"]
+    appearance = char.get("appearance", "Описание внешности отсутствует")
+    if appearance == "Описание внешности отсутствует":
+        await send_menu(
+            chat_id,
+            "❌ У персонажа нет описания внешности! Добавь его сначала.",
+            back_to=f"show_character|{character_id}"
+        )
+        return
 
-    # Генерируем новый портрет
-    b64_image, error = await generate_character_portrait(backstory, call.message.chat.id)
+    # Генерируем новый портрет на основе внешности
+    b64_image, error = await generate_character_portrait(appearance, chat_id)
     if error:
-        await send_menu(call.message.chat.id, f"❌ {error}", back_to=f"show_character|{character_id}")
+        await send_menu(chat_id, f"❌ {error}", back_to=f"show_character|{character_id}")
         return
 
     # Декодируем и отправляем новый портрет
     import base64
     image_data = base64.b64decode(b64_image)
-    await bot.send_photo(call.message.chat.id, photo=image_data, caption=f"Портрет {char['name']}")
+    await bot.send_photo(chat_id, photo=image_data, caption=f"Портрет {char['name']} на основе внешности")
 
     # Обновляем временный портрет в состоянии
     user_states[user_id]["data"]["b64_image"] = b64_image
@@ -942,7 +1487,7 @@ async def handle_regenerate_portrait(call):
         ("🔄 Перегенерировать", f"regenerate_portrait|{character_id}"),
         ("⬅️ Назад в меню персонажа", f"show_character|{character_id}")
     ]
-    await send_menu(call.message.chat.id, "✅ Новый портрет сгенерирован! Что дальше?", buttons, buttons_per_row=2)
+    await send_menu(chat_id, "✅ Новый портрет сгенерирован! Что дальше?", buttons, buttons_per_row=2)
 
 async def show_main_menu(chat_id, user_id):
     role, name = DATA["users"][user_id]["role"], DATA["users"][user_id]["name"]
@@ -1111,10 +1656,148 @@ async def manage_campaign(call):
         ("🗑 Удалить сессию", f"delete_session|{short_name}"),
         ("📜 История", f"dm_history|{short_name}"),
         ("🎥 Последние сессии", f"last_sessions_dm|{short_name}"),
-        ("🔑 Показать код", f"show_code|{short_name}")
+        ("🔑 Показать код", f"show_code|{short_name}"),
+        ("🏰 Удалить кампанию", f"delete_campaign_prompt|{short_name}")
     ]
     text = f"🏰 Кампания: {full_name}\nЧто хочешь сделать?"
     await send_menu(call.message.chat.id, text, buttons, buttons_per_row=3)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("delete_campaign_prompt|"))
+async def delete_campaign_prompt(call):
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    parts = call.data.split("|")
+    if len(parts) < 2:
+        await send_menu(chat_id, "❌ Ошибка в запросе!")
+        return
+    short_name = parts[1]
+    if short_name not in DATA["campaigns"] or DATA["campaigns"][short_name]["creator"] != user_id:
+        await send_menu(chat_id, "🚫 Ты не создатель этой кампании!")
+        return
+    full_name = DATA["campaigns"][short_name]["full_name"]
+    buttons = [
+        ("✅ Да", f"delete_campaign_password|{short_name}"),
+        ("❌ Нет", f"manage_campaign|{short_name}")
+    ]
+    text = (
+        f"🏰 Вы точно хотите удалить кампанию {full_name}?\n"
+        f"⚠️ Все данные кампании будут удалены без возможности восстановления!"
+    )
+    await send_menu(chat_id, text, buttons, buttons_per_row=2)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("delete_campaign_password|"))
+async def delete_campaign_password(call):
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    parts = call.data.split("|")
+    if len(parts) < 2:
+        await send_menu(chat_id, "❌ Ошибка в запросе!")
+        return
+    short_name = parts[1]
+    if short_name not in DATA["campaigns"] or DATA["campaigns"][short_name]["creator"] != user_id:
+        await send_menu(chat_id, "🚫 Ты не создатель этой кампании!")
+        return
+    user_states[user_id] = {"state": "confirm_campaign_deletion", "data": {"short_name": short_name}}
+    text = (
+        f"🔒 Введи свой пароль для подтверждения удаления кампании {DATA['campaigns'][short_name]['full_name']}:\n"
+        f"⚠️ Это действие необратимо!"
+    )
+    await send_menu(chat_id, text, back_to=f"manage_campaign|{short_name}")
+
+@bot.message_handler(func=lambda message: str(message.from_user.id) in user_states and user_states[str(message.from_user.id)].get("state") == "confirm_campaign_deletion")
+async def confirm_campaign_deletion(message):
+    global DATA_CHANGED, CAMPAIGN_BY_CODE
+    user_id = str(message.from_user.id)
+    chat_id = message.chat.id
+    short_name = user_states[user_id]["data"]["short_name"]
+    if short_name not in DATA["campaigns"] or DATA["campaigns"][short_name]["creator"] != user_id:
+        await send_menu(chat_id, "🚫 Ты не создатель этой кампании!", back_to="main_menu")
+        del user_states[user_id]
+        return
+    if message.text.strip() != DATA["users"][user_id]["password"]:
+        await send_menu(chat_id, "❌ Неверный пароль! Удаление отменено.", back_to=f"manage_campaign|{short_name}")
+        del user_states[user_id]
+        return
+    code = DATA["campaigns"][short_name]["code"]
+    full_name = DATA["campaigns"][short_name]["full_name"]
+    for char_id in DATA["campaigns"][short_name]["players"]:
+        DATA["characters"][char_id]["campaigns"].remove(short_name)
+    del DATA["campaigns"][short_name]
+    del CAMPAIGN_BY_CODE[code]
+    DATA_CHANGED = True
+    save_data()
+    await send_menu(chat_id, f"🗑 Кампания {full_name} удалена навсегда!", back_to="main_menu")
+    del user_states[user_id]
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("delete_char_prompt|"))
+async def delete_char_prompt(call):
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    parts = call.data.split("|")
+    if len(parts) < 2 or not await check_access(chat_id, user_id):
+        await send_menu(chat_id, "❌ Ошибка в запросе!")
+        return
+    char_id = parts[1]
+    char = DATA["characters"].get(char_id, {})
+    if char["owner"] != user_id:
+        await send_menu(chat_id, "🚫 Это не твой персонаж!")
+        return
+    buttons = [
+        ("✅ Да", f"delete_char_password|{char_id}"),
+        ("❌ Нет", f"show_character|{char_id}")
+    ]
+    text = (
+        f"🗑 Вы точно хотите удалить персонажа {char['name']}?\n"
+        f"⚠️ Все данные персонажа будут удалены без возможности восстановления!"
+    )
+    await send_menu(chat_id, text, buttons, buttons_per_row=2)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("delete_char_password|"))
+async def delete_char_password(call):
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    parts = call.data.split("|")
+    if len(parts) < 2 or not await check_access(chat_id, user_id):
+        await send_menu(chat_id, "❌ Ошибка в запросе!")
+        return
+    char_id = parts[1]
+    char = DATA["characters"].get(char_id, {})
+    if char["owner"] != user_id:
+        await send_menu(chat_id, "🚫 Это не твой персонаж!")
+        return
+    user_states[user_id] = {"state": "confirm_char_deletion", "data": {"char_id": char_id}}
+    text = (
+        f"🔒 Введи свой пароль для подтверждения удаления персонажа {char['name']}:\n"
+        f"⚠️ Это действие необратимо!"
+    )
+    await send_menu(chat_id, text, back_to=f"show_character|{char_id}")
+
+@bot.message_handler(func=lambda message: str(message.from_user.id) in user_states and user_states[str(message.from_user.id)].get("state") == "confirm_char_deletion")
+async def confirm_char_deletion(message):
+    global DATA_CHANGED
+    user_id = str(message.from_user.id)
+    chat_id = message.chat.id
+    char_id = user_states[user_id]["data"]["char_id"]
+    char = DATA["characters"].get(char_id, {})
+    if char["owner"] != user_id:
+        await send_menu(chat_id, "🚫 Это не твой персонаж!", back_to="main_menu")
+        del user_states[user_id]
+        return
+    if message.text.strip() != DATA["users"][user_id]["password"]:
+        await send_menu(chat_id, "❌ Неверный пароль! Удаление отменено.", back_to=f"show_character|{char_id}")
+        del user_states[user_id]
+        return
+    char_name = char["name"]
+    for campaign in DATA["campaigns"].values():
+        if char_id in campaign["players"]:
+            campaign["players"].remove(char_id)
+    if "portrait" in char and os.path.exists(char["portrait"]):
+        os.remove(char["portrait"])  # Удаляем файл портрета, если он есть
+    del DATA["characters"][char_id]
+    DATA_CHANGED = True
+    save_data()
+    await send_menu(chat_id, f"🗑 Персонаж {char_name} удалён навсегда!", back_to="main_menu")
+    del user_states[user_id]
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("show_code|"))
 async def show_code(call):
@@ -1924,6 +2607,11 @@ async def dm_history(call):
         + "\n".join(full_history)
     )
     await send_menu(call.message.chat.id, text, back_to=f"manage_campaign|{short_name}", buttons_per_row=1)
+
+@bot.callback_query_handler(func=lambda call: True)
+async def catch_all(call):
+    print(f"Unhandled callback: {call.data}")
+    await bot.send_message(call.message.chat.id, "🚧 Эта функция пока не реализована!")
 
 async def periodic_save():
     while True:
