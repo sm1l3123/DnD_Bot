@@ -14,6 +14,7 @@ import time
 from datetime import datetime
 from together import Together
 from dotenv import load_dotenv
+from functools import partial
 import base64
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -27,7 +28,6 @@ logging.info("Bot started")
 load_dotenv() # Загружает переменные из .env
 
 # Глобальные переменные
-# Глобальные переменныe
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 TOGETHER_API_KEY =  os.getenv("TOGETHER_API_KEY")
@@ -50,6 +50,15 @@ PORTRAIT_FOLDER_ID = None
 
 
 # Функции для Google Drive
+
+async def async_backup_to_drive():
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, backup_to_drive)
+
+async def async_backup_portrait_to_drive(portrait_path, owner_id, char_name):
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, partial(backup_portrait_to_drive, portrait_path, owner_id, char_name))
+
 def load_backup_folder_id():
     if os.path.exists(BACKUP_FOLDER_FILE):
         with open(BACKUP_FOLDER_FILE, "r") as f:
@@ -191,13 +200,13 @@ def load_data():
     CAMPAIGN_BY_CODE = {c["code"]: short_name for short_name, c in DATA["campaigns"].items()}
     DATA_CHANGED = False
 
-def save_data(force=False):
+async def save_data(force=False):
     global DATA_CHANGED
     if not DATA_CHANGED and not force:
         return
     with open(DATA_FILE, "w") as file:
         json.dump(DATA, file, indent=2)
-    backup_to_drive()
+    asyncio.create_task(async_backup_to_drive())  # Запускаем бэкап в фоне
     DATA_CHANGED = False
 
 def generate_code():
@@ -391,7 +400,7 @@ async def handle_admin_password_input(message):
     if message.text.strip() == ADMIN_PASSWORD:
         DATA["admins"][user_id] = True
         DATA_CHANGED = True
-        save_data()
+        await save_data()
         del user_states[user_id]
         await show_admin_panel(message.chat.id, user_id)
     else:
@@ -406,7 +415,7 @@ async def admin_logout(message):
         global DATA_CHANGED
         DATA["admins"][user_id] = False
         DATA_CHANGED = True
-        save_data()
+        await save_data()
         await send_menu(message.chat.id, "👋 Ты вышел из админ-панели!")
     else:
         await send_menu(message.chat.id, "❌ Ты не в админ-панели!")
@@ -439,7 +448,7 @@ async def handle_admin_commands(call):
         global DATA_CHANGED
         DATA["admins"][user_id] = False
         DATA_CHANGED = True
-        save_data()
+        await save_data()
         await send_menu(call.message.chat.id, "👋 Ты вышел из админ-панели!")
     elif command == "panel":
         await show_admin_panel(call.message.chat.id, user_id)
@@ -663,7 +672,7 @@ async def confirm_admin_char_deletion(message):
         os.remove(char["portrait"])
     del DATA["characters"][char_id]
     DATA_CHANGED = True
-    save_data()
+    await save_data()
     await send_menu(chat_id, f"🗑 Персонаж {char_name} удалён навсегда!", back_to=f"admin_user_details|{target_uid}")
     del user_states[user_id]
 
@@ -689,7 +698,7 @@ async def admin_delete_char(call):
             campaign["players"].remove(char_id)
     del DATA["characters"][char_id]
     DATA_CHANGED = True
-    save_data()
+    await save_data()
     await send_menu(chat_id, f"🗑 Персонаж {char_name} удалён!", back_to=f"admin_user_details|{target_uid}")
 
 # Запрос сброса пароля
@@ -821,7 +830,7 @@ async def register_user_input(message):
             "password": password
         }
         DATA_CHANGED = True
-        save_data()
+        await save_data()
         buttons = [("🔑 Войти", "login")]
         await send_menu(message.chat.id, f"✅ Ты зарегистрирован как {'мастер' if role == 'dm' else 'игрок'}, {name}!\nТеперь войди.", buttons)
     except ValueError:
@@ -893,7 +902,7 @@ async def create_character_name_input(message):
         "short_backstory": ""  # Сокращённая версия будет тут
     }
     DATA_CHANGED = True
-    save_data()
+    await save_data()
     user_states[user_id] = {"state": "adding_backstory_parts", "data": {"character_id": character_id, "name": name}}
     buttons = [("🏁 Завершить предысторию", f"finish_backstory|{character_id}")]
     await send_menu(message.chat.id, f"🧙‍♂️ Персонаж {name} (ID: {character_id}) создан!\nДобавляй предысторию частями:", buttons)
@@ -1041,7 +1050,7 @@ async def finish_backstory(call):
     if "backstory_parts" in DATA["characters"][character_id]:
         del DATA["characters"][character_id]["backstory_parts"]
     DATA_CHANGED = True
-    save_data()
+    await save_data()
 
     # Проверяем, откуда был вызов: создание или редактирование
     if user_states[user_id].get("state") == "adding_backstory_parts":
@@ -1100,7 +1109,7 @@ async def finish_backstory(call):
     if "backstory_parts" in DATA["characters"][character_id]:
         del DATA["characters"][character_id]["backstory_parts"]
     DATA_CHANGED = True
-    save_data()
+    await save_data()
 
     # Переключаем состояние на добавление внешности
     user_states[user_id] = {
@@ -1131,7 +1140,7 @@ async def add_appearance_input(message):
 
     DATA["characters"][character_id]["appearance"] = appearance
     DATA_CHANGED = True
-    save_data()
+    await save_data()
 
     buttons = [
         ("📜 Предыстория", f"show_character|{character_id}"),
@@ -1286,7 +1295,7 @@ async def process_appearance_input(message):
 
     DATA["characters"][character_id]["appearance"] = appearance
     DATA_CHANGED = True
-    save_data()
+    await save_data()
 
     await send_menu(
         chat_id,
@@ -1440,7 +1449,7 @@ async def handle_save_portrait(call):
     # Сохраняем путь к портрету в данных персонажа
     DATA["characters"][character_id]["portrait"] = portrait_path
     DATA_CHANGED = True
-    save_data()
+    await save_data()
 
     # Выполняем резервное копирование на Google Drive
     try:
@@ -1579,7 +1588,7 @@ async def create_campaign_input(message):
         }
         CAMPAIGN_BY_CODE[code] = short_name
         DATA_CHANGED = True
-        save_data()
+        await save_data()
         buttons = [(f"🏰 {short_name}", f"manage_campaign|{short_name}")]
         await send_menu(message.chat.id, f"✅ Кампания {full_name} создана!\nКод: {code}", buttons)
     except ValueError:
@@ -1635,7 +1644,7 @@ async def join_with_character(call):
     DATA["characters"][character_id]["campaigns"].append(short_name)
     global DATA_CHANGED
     DATA_CHANGED = True
-    save_data()
+    await save_data()
     buttons = [
         ("📜 История", f"history|{short_name}"),
         ("🚪 Выйти", "leave_campaign")
@@ -1742,7 +1751,7 @@ async def confirm_campaign_deletion(message):
     del DATA["campaigns"][short_name]
     del CAMPAIGN_BY_CODE[code]
     DATA_CHANGED = True
-    save_data()
+    await save_data()
     await send_menu(chat_id, f"🗑 Кампания {full_name} удалена навсегда!", back_to="main_menu")
     del user_states[user_id]
 
@@ -1812,7 +1821,7 @@ async def confirm_char_deletion(message):
         os.remove(char["portrait"])  # Удаляем файл портрета, если он есть
     del DATA["characters"][char_id]
     DATA_CHANGED = True
-    save_data()
+    await save_data()
     await send_menu(chat_id, f"🗑 Персонаж {char_name} удалён навсегда!", back_to="main_menu")
     del user_states[user_id]
 
@@ -1900,7 +1909,7 @@ async def end_session(call):
     sessions[new_session_name]["player_histories"] = player_histories
     global DATA_CHANGED
     DATA_CHANGED = True
-    save_data()
+    await save_data()
     # Уведомление мастера
     buttons = [
         ("▶️ Новая сессия", f"start_session|{short_name}"),
@@ -1961,7 +1970,7 @@ async def regenerate_dm_history(call):
     sessions[session_name]["history"] = history
     global DATA_CHANGED
     DATA_CHANGED = True
-    save_data()
+    await save_data()
     buttons = [
         ("▶️ Новая сессия", f"start_session|{short_name}"),
         ("🗑 Удалить сессию", f"delete_session|{short_name}"),
@@ -2074,7 +2083,7 @@ async def regenerate_title(call):
     sessions[new_session_name] = sessions.pop(old_session_name)
     global DATA_CHANGED
     DATA_CHANGED = True
-    save_data()
+    await save_data()
     buttons = [
         ("✅ Сохранить историю", f"save_history|{short_name}|{session_num}"),
         ("🔄 Переписать историю", f"rewrite_history|{short_name}|{session_num}"),
@@ -2118,7 +2127,7 @@ async def save_history(call):
     sessions[session_name]["history"] = history
     global DATA_CHANGED
     DATA_CHANGED = True
-    save_data()
+    await save_data()
     del user_states[user_id]
     buttons = [
         ("▶️ Новая сессия", f"start_session|{short_name}"),
@@ -2296,7 +2305,7 @@ async def process_note(message):
     sessions[session_name]["notes"][character_id].append(note)
     global DATA_CHANGED
     DATA_CHANGED = True
-    save_data()
+    await save_data()
     session_num = session_name.split("(", 1)[1][:-1] if "(" in session_name else session_name.split()[1]
     buttons = [("➕ Добавить ещё", f"add_note_with_char|{short_name}|{session_num}|{character_id}")]
     await send_menu(chat_id, f"✅ Заметка сохранена для {DATA['characters'][character_id]['name']} в {session_name}!", buttons, back_to=f"history|{short_name}")
@@ -2357,7 +2366,7 @@ async def regenerate_player_history(call):
     sessions[session_name]["player_histories"][character_id] = history
     global DATA_CHANGED
     DATA_CHANGED = True
-    save_data()
+    await save_data()
     buttons = [
         ("✅ Сохранить", f"save_player_history|{short_name}|{session_num}|{character_id}"),
         ("🔄 Перегенерировать", f"regenerate_player_history|{short_name}|{session_num}|{character_id}")
@@ -2463,7 +2472,7 @@ async def view_character_session(call):
             sessions[session_name]["player_histories"][character_id] = history
             global DATA_CHANGED
             DATA_CHANGED = True
-            save_data()
+            await save_data()
         else:
             history = f"Ошибка при генерации: {history}"
     else:
@@ -2644,7 +2653,7 @@ async def process_new_name(message):
         return
     DATA["users"][user_id]["name"] = new_name
     DATA_CHANGED = True
-    save_data()
+    await save_data()
     await send_menu(chat_id, f"✅ Имя изменено на {new_name}!", back_to="main_menu")
     del user_states[user_id]
 
@@ -2668,7 +2677,7 @@ async def process_new_password(message):
         return
     DATA["users"][user_id]["password"] = new_password
     DATA_CHANGED = True
-    save_data()
+    await save_data()
     await send_menu(chat_id, "✅ Пароль успешно изменён!", back_to="main_menu")
     del user_states[user_id]
 
@@ -2699,7 +2708,7 @@ async def process_new_char_name(message):
         return
     DATA["characters"][character_id]["name"] = new_name
     DATA_CHANGED = True
-    save_data()
+    await save_data()
     await send_menu(chat_id, f"✅ Имя персонажа изменено на {new_name}!", back_to=f"show_character|{character_id}")
     del user_states[user_id]
 
@@ -2719,7 +2728,7 @@ async def handle_edit_profile(call):
 async def periodic_save():
     while True:
         await asyncio.sleep(300)
-        save_data()
+        await save_data()
         logging.info("Данные автоматически сохранены")
 
 async def main():
