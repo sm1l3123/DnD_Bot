@@ -1,7 +1,4 @@
 # Импортируем нужные библиотеки
-
-#Hello world!
-
 import aiohttp
 import asyncio
 from telebot.async_telebot import AsyncTeleBot
@@ -30,6 +27,7 @@ logging.info("Bot started")
 load_dotenv() # Загружает переменные из .env
 
 # Глобальные переменные
+# Глобальные переменныe
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 TOGETHER_API_KEY =  os.getenv("TOGETHER_API_KEY")
@@ -1211,6 +1209,7 @@ async def show_character(call):
             buttons.extend([
                 ("✏️ Добавить предысторию", f"add_backstory|{character_id}"),
                 ("✏️ Изменить внешность", f"edit_appearance|{character_id}"),
+                ("✏️ Редактировать имя", f"edit_char_name|{character_id}"),  # Новая кнопка
                 ("🤝 Вступить в новую", "join_campaign")
             ])
         else:
@@ -1218,6 +1217,7 @@ async def show_character(call):
                 ("📖 Полная предыстория", f"show_full_backstory|{character_id}"),
                 ("✏️ Изменить предысторию", f"edit_backstory|{character_id}"),
                 ("✏️ Изменить внешность", f"edit_appearance|{character_id}"),
+                ("✏️ Редактировать имя", f"edit_char_name|{character_id}"),  # Новая кнопка
                 ("🤝 Вступить в новую", "join_campaign")
             ])
     else:
@@ -1227,6 +1227,7 @@ async def show_character(call):
                 ("✏️ Добавить предысторию", f"add_backstory|{character_id}"),
                 ("✏️ Добавить внешность", f"edit_appearance|{character_id}"),
                 ("🖼 Сгенерировать портрет", f"generate_portrait|{character_id}"),
+                ("✏️ Редактировать имя", f"edit_char_name|{character_id}"),  # Новая кнопка
                 ("🤝 Вступить в новую", "join_campaign")
             ])
         else:
@@ -1235,10 +1236,15 @@ async def show_character(call):
                 ("✏️ Изменить предысторию", f"edit_backstory|{character_id}"),
                 ("✏️ Добавить внешность", f"edit_appearance|{character_id}"),
                 ("🖼 Сгенерировать портрет", f"generate_portrait|{character_id}"),
+                ("✏️ Редактировать имя", f"edit_char_name|{character_id}"),  # Новая кнопка
                 ("🤝 Вступить в новую", "join_campaign")
             ])
 
     await send_menu(chat_id, text, buttons, buttons_per_row=2)
+
+
+
+
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("edit_appearance|"))
 async def edit_appearance(call):
@@ -1512,7 +1518,8 @@ async def show_main_menu(chat_id, user_id):
         buttons.extend([
             ("➕ Новая кампания", "new_campaign"),
             ("⚔️ Как игрок", "join_campaign"),
-            ("🧙‍♂️ Новый персонаж", "new_character")  # Изменено с "/newcharacter" на "new_character"
+            ("🧙‍♂️ Новый персонаж", "new_character"),
+            ("✏️ Редактировать профиль", "edit_profile")  # Новая кнопка
         ])
         await send_menu(chat_id, text, buttons, buttons_per_row=2)
     else:
@@ -1526,9 +1533,11 @@ async def show_main_menu(chat_id, user_id):
         buttons = [(f"📜 {char_name}", f"show_character|{cid}") for cid, char_name, _ in characters]
         buttons.extend([
             ("🤝 Вступить в кампанию", "join_campaign"),
-            ("🧙‍♂️ Новый персонаж", "new_character")  # Изменено с "/newcharacter" на "new_character"
+            ("🧙‍♂️ Новый персонаж", "new_character"),
+            ("✏️ Редактировать профиль", "edit_profile")  # Новая кнопка
         ])
         await send_menu(chat_id, text, buttons, buttons_per_row=2)
+
 
 @bot.callback_query_handler(func=lambda call: call.data == "new_character")
 async def handle_new_character(call):
@@ -2615,10 +2624,97 @@ async def dm_history(call):
     )
     await send_menu(call.message.chat.id, text, back_to=f"manage_campaign|{short_name}", buttons_per_row=1)
 
-@bot.callback_query_handler(func=lambda call: True)
-async def catch_all(call):
-    print(f"Unhandled callback: {call.data}")
-    await bot.send_message(call.message.chat.id, "🚧 Эта функция пока не реализована!")
+@bot.callback_query_handler(func=lambda call: call.data == "edit_name")
+async def ask_new_name(call):
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    if not await check_access(chat_id, user_id):
+        return
+    user_states[user_id] = {"state": "waiting_for_new_name"}
+    await send_menu(chat_id, "📝 Введи новое имя:", back_to="main_menu")
+
+@bot.message_handler(func=lambda message: str(message.from_user.id) in user_states and user_states[str(message.from_user.id)].get("state") == "waiting_for_new_name")
+async def process_new_name(message):
+    global DATA_CHANGED
+    user_id = str(message.from_user.id)
+    chat_id = message.chat.id
+    new_name = message.text.strip()
+    if not new_name:
+        await send_menu(chat_id, "❌ Имя не может быть пустым!", back_to="main_menu")
+        return
+    DATA["users"][user_id]["name"] = new_name
+    DATA_CHANGED = True
+    save_data()
+    await send_menu(chat_id, f"✅ Имя изменено на {new_name}!", back_to="main_menu")
+    del user_states[user_id]
+
+@bot.callback_query_handler(func=lambda call: call.data == "edit_password")
+async def ask_new_password(call):
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    if not await check_access(chat_id, user_id):
+        return
+    user_states[user_id] = {"state": "waiting_for_new_password"}
+    await send_menu(chat_id, "🔑 Введи новый пароль:", back_to="main_menu")
+
+@bot.message_handler(func=lambda message: str(message.from_user.id) in user_states and user_states[str(message.from_user.id)].get("state") == "waiting_for_new_password")
+async def process_new_password(message):
+    global DATA_CHANGED
+    user_id = str(message.from_user.id)
+    chat_id = message.chat.id
+    new_password = message.text.strip()
+    if not new_password:
+        await send_menu(chat_id, "❌ Пароль не может быть пустым!", back_to="main_menu")
+        return
+    DATA["users"][user_id]["password"] = new_password
+    DATA_CHANGED = True
+    save_data()
+    await send_menu(chat_id, "✅ Пароль успешно изменён!", back_to="main_menu")
+    del user_states[user_id]
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("edit_char_name|"))
+async def ask_new_char_name(call):
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    parts = call.data.split("|")
+    if len(parts) < 2:
+        await send_menu(chat_id, "❌ Ошибка в запросе!")
+        return
+    character_id = parts[1]
+    if character_id not in DATA["characters"] or DATA["characters"][character_id]["owner"] != user_id:
+        await send_menu(chat_id, "🚫 Это не твой персонаж!")
+        return
+    user_states[user_id] = {"state": "waiting_for_new_char_name", "data": {"character_id": character_id}}
+    await send_menu(chat_id, "📝 Введи новое имя персонажа:", back_to=f"show_character|{character_id}")
+
+@bot.message_handler(func=lambda message: str(message.from_user.id) in user_states and user_states[str(message.from_user.id)].get("state") == "waiting_for_new_char_name")
+async def process_new_char_name(message):
+    global DATA_CHANGED
+    user_id = str(message.from_user.id)
+    chat_id = message.chat.id
+    character_id = user_states[user_id]["data"]["character_id"]
+    new_name = message.text.strip()
+    if not new_name:
+        await send_menu(chat_id, "❌ Имя не может быть пустым!", back_to=f"show_character|{character_id}")
+        return
+    DATA["characters"][character_id]["name"] = new_name
+    DATA_CHANGED = True
+    save_data()
+    await send_menu(chat_id, f"✅ Имя персонажа изменено на {new_name}!", back_to=f"show_character|{character_id}")
+    del user_states[user_id]
+
+@bot.callback_query_handler(func=lambda call: call.data == "edit_profile")
+async def handle_edit_profile(call):
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    if not await check_access(chat_id, user_id):
+        return
+    buttons = [
+        ("✏️ Изменить имя", "edit_name"),
+        ("🔑 Изменить пароль", "edit_password"),
+    ]
+    text = "Что ты хочешь изменить в своём профиле?"
+    await send_menu(chat_id, text, buttons, back_to="main_menu", buttons_per_row=2)
 
 async def periodic_save():
     while True:
