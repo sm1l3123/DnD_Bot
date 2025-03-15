@@ -197,9 +197,10 @@ def load_data():
         DATA["admins"] = {}
     if "characters" not in DATA:
         DATA["characters"] = {}
-    # Добавляем инициализацию квестов для всех персонажей
+    # Инициализация 'quests' для всех персонажей
     for char_id in DATA["characters"]:
         if "quests" not in DATA["characters"][char_id]:
+            logging.info(f"Adding 'quests' to character {char_id}")
             DATA["characters"][char_id]["quests"] = {"active": {}, "completed": {}}
     CAMPAIGN_BY_CODE = {c["code"]: short_name for short_name, c in DATA["campaigns"].items()}
     DATA_CHANGED = False
