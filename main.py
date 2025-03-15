@@ -197,6 +197,10 @@ def load_data():
         DATA["admins"] = {}
     if "characters" not in DATA:
         DATA["characters"] = {}
+    # Добавляем инициализацию квестов для всех персонажей
+    for char_id in DATA["characters"]:
+        if "quests" not in DATA["characters"][char_id]:
+            DATA["characters"][char_id]["quests"] = {"active": {}, "completed": {}}
     CAMPAIGN_BY_CODE = {c["code"]: short_name for short_name, c in DATA["campaigns"].items()}
     DATA_CHANGED = False
 
@@ -2390,10 +2394,399 @@ async def player_history(call):
         return
     buttons = [
         ("📜 Полная история", f"full_history_player|{short_name}"),
-        ("🎥 Последние сессии", f"last_sessions_player|{short_name}")
+        ("🎥 Последние сессии", f"last_sessions_player|{short_name}"),
+        ("📜 Квесты", f"select_character_quests|{short_name}")  # Новая кнопка для перехода к квестам
     ]
     text = f"📜 История кампании\n{DATA['campaigns'][short_name]['full_name']}\nЧто посмотреть для твоих персонажей?"
     await send_menu(call.message.chat.id, text, buttons, buttons_per_row=2)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("quests_menu|"))
+async def quests_menu(call):
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    parts = call.data.split("|")
+    if len(parts) < 2:
+        await send_menu(chat_id, "❌ Ошибка в запросе!")
+        return
+    character_id = parts[1]
+    if not await check_access(chat_id, user_id) or DATA["characters"][character_id]["owner"] != user_id:
+        await send_menu(chat_id, "🚫 Это не твой персонаж!")
+        return
+
+    buttons = [
+        ("📋 Активные квесты", f"active_quests|{character_id}"),
+        ("✅ Завершённые квесты", f"completed_quests|{character_id}"),
+        ("➕ Новый квест", f"new_quest|{character_id}")
+    ]
+    text = f"📜 Квесты персонажа {DATA['characters'][character_id]['name']}"
+    await send_menu(chat_id, text, buttons, back_to=f"show_character|{character_id}", buttons_per_row=2)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("active_quests|"))
+async def active_quests(call):
+    logging.info(f"active_quests called with data: {call.data}")
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    parts = call.data.split("|")
+    if len(parts) < 2:
+        await send_menu(chat_id, "❌ Ошибка в запросе!")
+        return
+    character_id = parts[1]
+    if not await check_access(chat_id, user_id) or DATA["characters"][character_id]["owner"] != user_id:
+        await send_menu(chat_id, "🚫 Это не твой персонаж!")
+        return
+
+    quests = DATA["characters"][character_id]["quests"]["active"]
+    if not quests:
+        await send_menu(chat_id, "📭 У тебя нет активных квестов!", back_to=f"quests_menu|{character_id}")
+        return
+
+    buttons = [(q_data["name"], f"quest_details|{character_id}|{qid}") for qid, q_data in quests.items()]
+    text = f"📋 Активные квесты {DATA['characters'][character_id]['name']}:"
+    await send_menu(chat_id, text, buttons, back_to=f"quests_menu|{character_id}", buttons_per_row=1)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("new_quest|"))
+async def new_quest(call):
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    parts = call.data.split("|")
+    if len(parts) < 2:
+        await send_menu(chat_id, "❌ Ошибка в запросе!")
+        return
+    character_id = parts[1]
+    if not await check_access(chat_id, user_id) or DATA["characters"][character_id]["owner"] != user_id:
+        await send_menu(chat_id, "🚫 Это не твой персонаж!")
+        return
+
+    user_states[user_id] = {"state": "waiting_for_quest_name", "data": {"character_id": character_id}}
+    await send_menu(chat_id, "📜 Введи название нового квеста:", back_to=f"quests_menu|{character_id}")
+
+@bot.message_handler(func=lambda message: str(message.from_user.id) in user_states and user_states[str(message.from_user.id)].get("state") == "waiting_for_quest_name")
+async def process_quest_name(message):
+    global DATA_CHANGED
+    user_id = str(message.from_user.id)
+    chat_id = message.chat.id
+    character_id = user_states[user_id]["data"]["character_id"]
+    quest_name = message.text.strip()
+    if not quest_name:
+        await send_menu(chat_id, "❌ Название не может быть пустым!", back_to=f"quests_menu|{character_id}")
+        return
+
+    quest_id = f"quest_{len(DATA['characters'][character_id]['quests']['active']) + len(DATA['characters'][character_id]['quests']['completed']) + 1}"
+    DATA["characters"][character_id]["quests"]["active"][quest_id] = {
+        "name": quest_name,
+        "tasks": [],
+        "note": ""
+    }
+    DATA_CHANGED = True
+    await save_data()
+
+    user_states[user_id] = {"state": "waiting_for_quest_note", "data": {"character_id": character_id, "quest_id": quest_id}}
+    buttons = [("➡️ Пропустить", f"skip_quest_note|{character_id}|{quest_id}")]
+    await send_menu(chat_id, f"✅ Квест '{quest_name}' создан!\nДобавь заметку (или пропусти):", buttons)
+
+@bot.message_handler(func=lambda message: str(message.from_user.id) in user_states and user_states[str(message.from_user.id)].get("state") == "waiting_for_quest_note")
+async def process_quest_note(message):
+    global DATA_CHANGED
+    user_id = str(message.from_user.id)
+    chat_id = message.chat.id
+    character_id = user_states[user_id]["data"]["character_id"]
+    quest_id = user_states[user_id]["data"]["quest_id"]
+    note = message.text.strip()
+
+    DATA["characters"][character_id]["quests"]["active"][quest_id]["note"] = note
+    DATA_CHANGED = True
+    await save_data()
+
+    del user_states[user_id]
+    await add_first_task(chat_id, user_id, character_id, quest_id)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("skip_quest_note|"))
+async def skip_quest_note(call):
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    parts = call.data.split("|")
+    if len(parts) < 3:
+        await send_menu(chat_id, "❌ Ошибка в запросе!")
+        return
+    character_id, quest_id = parts[1], parts[2]
+    if not await check_access(chat_id, user_id) or DATA["characters"][character_id]["owner"] != user_id:
+        await send_menu(chat_id, "🚫 Это не твой персонаж!")
+        return
+
+    del user_states[user_id]
+    await add_first_task(chat_id, user_id, character_id, quest_id)
+
+async def add_first_task(chat_id, user_id, character_id, quest_id):
+    user_states[user_id] = {"state": "waiting_for_task_text", "data": {"character_id": character_id, "quest_id": quest_id}}
+    await send_menu(chat_id, f"📋 Введи текст первого задания для '{DATA['characters'][character_id]['quests']['active'][quest_id]['name']}':", back_to=f"quest_details|{character_id}|{quest_id}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("add_task|"))
+async def add_task(call):
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    parts = call.data.split("|")
+    if len(parts) < 3:
+        await send_menu(chat_id, "❌ Ошибка в запросе!")
+        return
+    character_id, quest_id = parts[1], parts[2]
+    if not await check_access(chat_id, user_id) or DATA["characters"][character_id]["owner"] != user_id:
+        await send_menu(chat_id, "🚫 Это не твой персонаж!")
+        return
+
+    user_states[user_id] = {"state": "waiting_for_task_text", "data": {"character_id": character_id, "quest_id": quest_id}}
+    await send_menu(chat_id, "📋 Введи текст нового задания:", back_to=f"quest_details|{character_id}|{quest_id}")
+
+@bot.message_handler(func=lambda message: str(message.from_user.id) in user_states and user_states[str(message.from_user.id)].get("state") == "waiting_for_task_text")
+async def process_task_text(message):
+    global DATA_CHANGED
+    user_id = str(message.from_user.id)
+    chat_id = message.chat.id
+    character_id = user_states[user_id]["data"]["character_id"]
+    quest_id = user_states[user_id]["data"]["quest_id"]
+    task_text = message.text.strip()
+
+    if not task_text:
+        await send_menu(chat_id, "❌ Задание не может быть пустым!", back_to=f"quest_details|{character_id}|{quest_id}")
+        return
+
+    DATA["characters"][character_id]["quests"]["active"][quest_id]["tasks"].append({
+        "text": task_text,
+        "completed": False,
+        "note": ""
+    })
+    DATA_CHANGED = True
+    await save_data()
+
+    del user_states[user_id]
+    await send_menu(chat_id, f"✅ Задание '{task_text}' добавлено!", back_to=f"quest_details|{character_id}|{quest_id}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("complete_task|"))
+async def complete_task(call):
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    parts = call.data.split("|")
+    if len(parts) < 4:
+        await send_menu(chat_id, "❌ Ошибка в запросе!")
+        return
+    character_id, quest_id, task_idx = parts[1], parts[2], int(parts[3])
+    if not await check_access(chat_id, user_id) or DATA["characters"][character_id]["owner"] != user_id:
+        await send_menu(chat_id, "🚫 Это не твой персонаж!")
+        return
+
+    quest = DATA["characters"][character_id]["quests"]["active"][quest_id]
+    if task_idx >= len(quest["tasks"]):
+        await send_menu(chat_id, "❌ Задание не найдено!", back_to=f"quest_details|{character_id}|{quest_id}")
+        return
+
+    task = quest["tasks"][task_idx]
+    if task["completed"]:
+        await send_menu(chat_id, "❌ Это задание уже завершено!", back_to=f"quest_details|{character_id}|{quest_id}")
+        return
+
+    task["completed"] = True
+    global DATA_CHANGED
+    DATA_CHANGED = True
+    await save_data()
+
+    user_states[user_id] = {"state": "waiting_for_task_note", "data": {"character_id": character_id, "quest_id": quest_id, "task_idx": task_idx}}
+    buttons = [("➡️ Пропустить", f"skip_task_note|{character_id}|{quest_id}|{task_idx}")]
+    await send_menu(chat_id, f"✅ Задание '{task['text']}' завершено!\nДобавь заметку (или пропусти):", buttons)
+
+@bot.message_handler(func=lambda message: str(message.from_user.id) in user_states and user_states[str(message.from_user.id)].get("state") == "waiting_for_task_note")
+async def process_task_note(message):
+    global DATA_CHANGED
+    user_id = str(message.from_user.id)
+    chat_id = message.chat.id
+    character_id = user_states[user_id]["data"]["character_id"]
+    quest_id = user_states[user_id]["data"]["quest_id"]
+    task_idx = user_states[user_id]["data"]["task_idx"]
+    note = message.text.strip()
+
+    DATA["characters"][character_id]["quests"]["active"][quest_id]["tasks"][task_idx]["note"] = note
+    DATA_CHANGED = True
+    await save_data()
+
+    del user_states[user_id]
+    await send_menu(chat_id, "✅ Заметка добавлена!", back_to=f"quest_details|{character_id}|{quest_id}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("skip_task_note|"))
+async def skip_task_note(call):
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    parts = call.data.split("|")
+    if len(parts) < 4:
+        await send_menu(chat_id, "❌ Ошибка в запросе!")
+        return
+    character_id, quest_id, task_idx = parts[1], parts[2], int(parts[3])
+    if not await check_access(chat_id, user_id) or DATA["characters"][character_id]["owner"] != user_id:
+        await send_menu(chat_id, "🚫 Это не твой персонаж!")
+        return
+
+    del user_states[user_id]
+    await send_menu(chat_id, "✅ Завершено без заметки!", back_to=f"quest_details|{character_id}|{quest_id}")
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("complete_quest|"))
+async def complete_quest(call):
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    parts = call.data.split("|")
+    if len(parts) < 3:
+        await send_menu(chat_id, "❌ Ошибка в запросе!")
+        return
+    character_id, quest_id = parts[1], parts[2]
+    if not await check_access(chat_id, user_id) or DATA["characters"][character_id]["owner"] != user_id:
+        await send_menu(chat_id, "🚫 Это не твой персонаж!")
+        return
+
+    quest = DATA["characters"][character_id]["quests"]["active"].get(quest_id)
+    if not quest:
+        await send_menu(chat_id, "❌ Квест не найден!", back_to=f"active_quests|{character_id}")
+        return
+
+    # Проверяем, все ли задания завершены
+    if not all(task["completed"] for task in quest["tasks"]):
+        await send_menu(chat_id, "❌ Заверши все задания перед завершением квеста!", back_to=f"quest_details|{character_id}|{quest_id}")
+        return
+
+    # Формируем промпт для пересказа от лица героя
+    prompt = (
+        f"Перескажи события квеста '{quest['name']}' от лица персонажа {DATA['characters'][character_id]['name']}.\n"
+        f"Вот детали квеста:\n"
+        f"Заметка к квесту: {quest['note'] or 'Нет заметки'}\n"
+        f"Задания:\n" + "\n".join(
+            f"- {task['text']} (Заметка: {task['note'] or 'Нет заметки'})" for task in quest["tasks"]
+        )
+    )
+
+    # Генерируем историю через вашу функцию
+    history = await generate_text(prompt, chat_id, is_dm=False, is_title=False)
+    if "Ошибка" in history:
+        history = "История не сгенерирована из-за ошибки API."
+
+    # Добавляем историю в данные квеста
+    quest["history"] = history
+
+    # Перемещаем квест в завершённые
+    DATA["characters"][character_id]["quests"]["completed"][quest_id] = quest
+    del DATA["characters"][character_id]["quests"]["active"][quest_id]
+    global DATA_CHANGED
+    DATA_CHANGED = True
+    await save_data()
+
+    # Отправляем сообщение с историей
+    text = f"✅ Квест '{quest['name']}' завершён!\n\n**История:**\n{history}"
+    await send_menu(chat_id, text, back_to=f"quests_menu|{character_id}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("quest_details|"))
+async def quest_details(call):
+    logging.info(f"quest_details called with data: {call.data}")
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    parts = call.data.split("|")
+    if len(parts) < 3:
+        await send_menu(chat_id, "❌ Ошибка в запросе!")
+        return
+    character_id, quest_id = parts[1], parts[2]
+    if not await check_access(chat_id, user_id) or DATA["characters"][character_id]["owner"] != user_id:
+        await send_menu(chat_id, "🚫 Это не твой персонаж!")
+        return
+
+    quest = DATA["characters"][character_id]["quests"]["active"].get(quest_id)
+    if not quest:
+        await send_menu(chat_id, "❌ Квест не найден!", back_to=f"active_quests|{character_id}")
+        return
+
+    text = f"**{quest['name']}**\n"
+    if quest["note"]:
+        text += f"Заметка: {quest['note']}\n"
+    text += "\nЗадания:\n" + "\n".join(
+        f"- [{'✅' if task['completed'] else '⏳'}] {task['text']}" + (f" ({task['note']})" if task['note'] else "")
+        for task in quest["tasks"]
+    )
+    buttons = [
+        ("➕ Добавить задание", f"add_task|{character_id}|{quest_id}"),
+        ("🏁 Завершить квест", f"complete_quest|{character_id}|{quest_id}")
+    ]
+    for i, task in enumerate(quest["tasks"]):
+        if not task["completed"]:
+            buttons.append((f"✅ Завершить '{task['text']}'", f"complete_task|{character_id}|{quest_id}|{i}"))
+    await send_menu(chat_id, text, back_to=f"active_quests|{character_id}", buttons=buttons, buttons_per_row=2)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("completed_quest_details|"))
+async def completed_quest_details(call):
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    parts = call.data.split("|")
+    if len(parts) < 3:
+        await send_menu(chat_id, "❌ Ошибка в запросе!")
+        return
+    character_id, quest_id = parts[1], parts[2]
+    if not await check_access(chat_id, user_id) or DATA["characters"][character_id]["owner"] != user_id:
+        await send_menu(chat_id, "🚫 Это не твой персонаж!")
+        return
+
+    quest = DATA["characters"][character_id]["quests"]["completed"].get(quest_id)
+    if not quest:
+        await send_menu(chat_id, "❌ Квест не найден!", back_to=f"completed_quests|{character_id}")
+        return
+
+    text = f"**{quest['name']}**\n"
+    if quest["note"]:
+        text += f"Заметка: {quest['note']}\n"
+    text += "\nЗадания:\n" + "\n".join(
+        f"- {task['text']}" + (f"\n  Заметка: {task['note']}" if task['note'] else "")
+        for task in quest["tasks"]
+    )
+    if "history" in quest:
+        text += f"\n\n**История:**\n{quest['history']}"
+    await send_menu(chat_id, text, back_to=f"completed_quests|{character_id}")
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("completed_quests|"))
+async def completed_quests(call):
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    parts = call.data.split("|")
+    if len(parts) < 2:
+        await send_menu(chat_id, "❌ Ошибка в запросе!")
+        return
+    character_id = parts[1]
+    if not await check_access(chat_id, user_id) or DATA["characters"][character_id]["owner"] != user_id:
+        await send_menu(chat_id, "🚫 Это не твой персонаж!")
+        return
+
+    quests = DATA["characters"][character_id]["quests"]["completed"]
+    if not quests:
+        await send_menu(chat_id, "📭 У тебя нет завершённых квестов!", back_to=f"quests_menu|{character_id}")
+        return
+
+    buttons = [(q_data["name"], f"completed_quest_details|{character_id}|{qid}") for qid, q_data in quests.items()]
+    text = f"✅ Завершённые квесты {DATA['characters'][character_id]['name']}:"
+    await send_menu(chat_id, text, buttons, back_to=f"quests_menu|{character_id}", buttons_per_row=1)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("select_character_quests|"))
+async def select_character_quests(call):
+    user_id = str(call.from_user.id)
+    chat_id = call.message.chat.id
+    parts = call.data.split("|")
+    if len(parts) < 2:
+        await send_menu(chat_id, "❌ Ошибка в запросе!")
+        return
+    short_name = parts[1]
+    if not await check_access(chat_id, user_id) or short_name not in DATA["campaigns"]:
+        await send_menu(chat_id, "🚫 Ошибка доступа!")
+        return
+
+    characters = [(cid, c["name"]) for cid, c in DATA["characters"].items() if c["owner"] == user_id and short_name in c["campaigns"]]
+    if not characters:
+        await send_menu(chat_id, "❌ У тебя нет персонажей в этой кампании!", back_to=f"history|{short_name}")
+        return
+
+    buttons = [(name, f"quests_menu|{cid}") for cid, name in characters]
+    text = f"📜 Выбери персонажа для просмотра квестов в кампании {DATA['campaigns'][short_name]['full_name']}:"
+    await send_menu(chat_id, text, buttons, back_to=f"history|{short_name}", buttons_per_row=2)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("last_sessions_player|"))
 async def last_sessions_player(call):
